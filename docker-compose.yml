@@ -1,0 +1,74 @@
+# docker-compose.yml — стек: Go-приложение + PostgreSQL.
+# Поле `version` не пишем: в Compose v2 оно устарело и игнорируется.
+# Секреты не хранятся здесь: Compose подставляет их из .env (он в .gitignore).
+
+services:
+  app:
+    build:
+      # Контекст — корень проекта: в образ попадают backend И frontend.
+      # Лишнее (.env, init/) отсекает .dockerignore.
+      context: .
+      dockerfile: backend/Dockerfile
+    # Явная версия вместо latest: понятно, что именно запущено, и можно откатиться.
+    image: app-backend:${APP_VERSION:-1.0.0}
+    ports:
+      # Наружу выставляем только приложение. Порт на хосте задаётся APP_PORT,
+      # чтобы CI-стек на self-hosted runner не конфликтовал с локальным (8080).
+      - "${APP_PORT:-8080}:8080"
+    environment:
+      HTTP_PORT: "8080"
+      STATIC_DIR: /app/static
+      # Имя сервиса = DNS-имя внутри сети Compose, поэтому db, а не localhost.
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_USER: ${DB_USER:?DB_USER is not set in .env}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is not set in .env}
+      DB_NAME: ${DB_NAME:?DB_NAME is not set in .env}
+    depends_on:
+      db:
+        # Простой depends_on ждёт лишь СТАРТА контейнера; service_healthy —
+        # пока pg_isready не скажет, что БД реально принимает соединения.
+        condition: service_healthy
+    # Поднимается после рестарта хоста/демона, но не после явного `compose down`.
+    restart: unless-stopped
+    # Отдельные сети: app — мост между "внешней" сетью и сетью БД.
+    networks:
+      - frontend_net
+      - backend_net
+
+  db:
+    # Мажор+дистрибутив зафиксированы; alpine — меньше образ.
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${DB_USER:?DB_USER is not set in .env}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is not set in .env}
+      POSTGRES_DB: ${DB_NAME:?DB_NAME is not set in .env}
+    # ports НЕТ намеренно: БД доступна только из backend_net, не с хоста и не извне.
+    healthcheck:
+      # $$ — экранирование: переменные раскроет shell внутри контейнера,
+      # а не Compose при чтении файла.
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    volumes:
+      # Именованный том: данные переживают пересоздание контейнера.
+      - db_data:/var/lib/postgresql/data
+      # Bind mount read-only: SQL-скрипты выполняются при первом старте (пустой том).
+      - ./init:/docker-entrypoint-initdb.d:ro
+    restart: unless-stopped
+    networks:
+      - backend_net
+
+volumes:
+  db_data:
+
+networks:
+  # Сеть для внешнего трафика к приложению (через неё публикуется порт 8080).
+  frontend_net:
+    driver: bridge
+  # internal: true — у сети нет выхода наружу; в ней живёт только БД и app.
+  backend_net:
+    driver: bridge
+    internal: true

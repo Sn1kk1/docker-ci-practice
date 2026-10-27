@@ -1,0 +1,149 @@
+# Деплой и проверка стека (Go app + PostgreSQL) на self-hosted runner.
+# Цепочка: .env из GitHub Secrets -> docker compose up -> тесты -> артефакты.
+name: Deploy and Test
+
+on:
+  push:
+    branches: [main]
+  # Ручной запуск из вкладки Actions
+  workflow_dispatch:
+
+# Один runner = одна машина: два запуска подряд не должны поднимать стек одновременно
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Отдельное имя проекта: CI-стек не пересекается с тем, что запущен руками
+  # (свои контейнеры, сети и том БД)
+  COMPOSE_PROJECT_NAME: ci-app
+  # Порт на хосте для CI-стека (переменная репозитория, по умолчанию 8081),
+  # чтобы не конфликтовать с локальным стеком на 8080
+  APP_PORT: ${{ vars.APP_PORT || '8081' }}
+
+jobs:
+  deploy-and-test:
+    # Job выполняется на нашей машине, а не на облачном runner'е GitHub
+    runs-on: self-hosted
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check runner tools
+        run: |
+          # Runner, запущенный как сервис, может не видеть PATH пользователя:
+          # явно добавляем каталоги, куда Docker Desktop и Homebrew ставят бинарники
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
+          echo "Runner: $RUNNER_NAME ($RUNNER_OS/$RUNNER_ARCH)"
+          docker version --format 'Docker {{.Server.Version}}'
+          docker compose version
+          jq --version
+
+      - name: Create .env from GitHub Secrets
+        # Секреты передаём через env, а не подставляем ${{ }} прямо в скрипт:
+        # так значение не может «сломать» shell-команду
+        env:
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+        run: |
+          for name in DB_USER DB_PASSWORD DB_NAME; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Secret $name is not set (Settings -> Secrets and variables -> Actions)"
+              exit 1
+            fi
+          done
+
+          # 600: файл с паролем читает только пользователь runner'а
+          umask 077
+          cat > .env <<ENVFILE
+          DB_USER=${DB_USER}
+          DB_PASSWORD=${DB_PASSWORD}
+          DB_NAME=${DB_NAME}
+          APP_VERSION=1.0.0
+          APP_PORT=${APP_PORT}
+          ENVFILE
+
+          # Для артефакта — копия без значений: видно, какие ключи были заданы
+          mkdir -p logs
+          sed 's/=.*/=***/' .env > logs/env.masked
+          echo "Created .env with keys:"; cat logs/env.masked
+
+      - name: Validate compose file
+        run: docker compose config -q
+
+      - name: Deploy with Docker Compose
+        run: |
+          # --wait: команда возвращается, только когда все сервисы healthy
+          # (у db — pg_isready, у app — /healthz). Вместо слепого sleep 30.
+          docker compose up -d --build --wait --wait-timeout 120
+          docker compose ps
+
+      - name: Verify containers are running
+        run: |
+          expected=$(docker compose config --services | wc -l | tr -d ' ')
+          running=$(docker compose ps --status running --services | wc -l | tr -d ' ')
+          echo "Running services: $running of $expected"
+          docker compose ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}'
+          if [ "$running" -ne "$expected" ]; then
+            echo "::error::Not all containers are running"
+            exit 1
+          fi
+
+      - name: Run application tests
+        run: ./tests/smoke.sh
+
+      - name: Create test report
+        if: always()
+        run: |
+          mkdir -p test-results
+          {
+            echo "# Deployment Test Report"
+            echo
+            echo "- Date: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            echo "- Commit: ${GITHUB_SHA::7} (${GITHUB_REF_NAME})"
+            echo "- Runner: ${RUNNER_NAME} (${RUNNER_OS}/${RUNNER_ARCH})"
+            echo "- Compose project: ${COMPOSE_PROJECT_NAME}, port ${APP_PORT}"
+            echo
+            echo "## Containers"
+            echo
+            echo '```'
+            docker compose ps --format 'table {{.Service}}\t{{.Image}}\t{{.Status}}' || true
+            echo '```'
+            echo
+            echo "## Tests"
+            echo
+            cat test-results/results.md 2>/dev/null || echo "Tests did not run."
+          } > test-results/test-report.md
+          # Тот же отчёт — на странице запуска в GitHub (вкладка Summary)
+          cat test-results/test-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Collect Docker logs
+        if: always()
+        run: |
+          mkdir -p logs
+          docker compose logs --no-color > logs/deployment-logs.txt 2>&1 || true
+          docker compose ps -a > logs/docker-ps.txt 2>&1 || true
+          docker images app-backend > logs/docker-images.txt 2>&1 || true
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-${{ github.run_id }}
+          # .env с паролями НЕ выгружаем — только маскированную копию logs/env.masked
+          path: |
+            test-results/
+            logs/
+            docker-compose.yml
+          retention-days: 30
+
+      - name: Remove .env from runner
+        # Стек уже запущен (значения внутри контейнеров), файл с паролем
+        # больше не нужен — не оставляем секреты на диске runner'а
+        if: always()
+        run: rm -f .env
