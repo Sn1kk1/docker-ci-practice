@@ -4,8 +4,13 @@
 # Запуск из корня проекта после `docker compose up`:  ./tests/smoke.sh
 set -euo pipefail
 
-# Настройки берём из того же .env, по которому поднят стек
-set -a; source .env; set +a
+# Настройки берём из того же .env, по которому поднят стек.
+# Читаем как KEY=VALUE, а не через `source`: в пароле могут быть <, >, $ и пробелы,
+# и shell не должен их интерпретировать (Compose читает .env так же — буквально).
+while IFS='=' read -r key value || [ -n "$key" ]; do
+  case "$key" in ''|'#'*) continue ;; esac
+  export "$key=$value"
+done < .env
 BASE_URL="http://localhost:${APP_PORT:-8080}"
 OUT=test-results
 mkdir -p "$OUT"
@@ -18,6 +23,12 @@ bad() { echo "FAIL  $1"; echo "| $1 | FAIL |" >> "$OUT/results.md"; fail=$((fail
 psql_db() {
   docker compose exec -T db psql -U "$DB_USER" -d "$DB_NAME" -At -v ON_ERROR_STOP=1 -c "$1"
 }
+
+# Без поднятого стека все проверки бессмысленны — говорим об этом сразу
+if ! curl -s -o /dev/null "$BASE_URL/"; then
+  echo "Приложение не отвечает на $BASE_URL. Сначала поднимите стек: docker compose up -d --build" >&2
+  exit 1
+fi
 
 printf '| Тест | Результат |\n| --- | --- |\n' > "$OUT/results.md"
 
