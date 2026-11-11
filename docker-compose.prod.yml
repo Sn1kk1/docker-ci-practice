@@ -1,0 +1,39 @@
+name: mm-practice4
+services:
+  mattermost:
+    image: mattermost/mattermost-team-edition:${MM_VERSION:-12.0.1}
+    platform: linux/amd64
+    ports:
+      - "127.0.0.1:${MM_PORT:-8065}:8065"
+    environment:
+      MM_SQLSETTINGS_DRIVERNAME: postgres
+      MM_SQLSETTINGS_DATASOURCE: "postgres://mmuser:${DB_POSTGRES_PASSWORD:?set DB_POSTGRES_PASSWORD}@db-postgres:5432/mattermost?sslmode=disable"
+      MM_SERVICESETTINGS_SITEURL: "http://localhost:${MM_PORT:-8065}"
+      MM_PLUGINSETTINGS_ENABLE: "false"
+    volumes:
+      - mattermost-data:/mattermost/data
+    depends_on:
+      db-postgres:
+        condition: service_healthy
+    networks: [app, db]
+  db-postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: mattermost
+      POSTGRES_USER: mmuser
+      POSTGRES_PASSWORD: "${DB_POSTGRES_PASSWORD:?set DB_POSTGRES_PASSWORD}"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", 'PGPASSWORD="$$POSTGRES_PASSWORD" psql -h 127.0.0.1 -U mmuser -d mattermost -Atqc "SELECT 1"']
+      interval: 3s
+      timeout: 5s
+      retries: 60
+    networks: [db]
+volumes:
+  mattermost-data:
+  postgres-data:
+networks:
+  app:
+  db:
+    internal: true

@@ -2,3 +2,7 @@
 .env
 # Результаты тестов, которые создаёт workflow
 test-results/
+
+*.sql.gz
+.DS_Store
+__pycache__/

@@ -1,0 +1,42 @@
+name: mm-practice4
+services:
+  mattermost:
+    image: mattermost/mattermost-team-edition:9.5.14
+    platform: linux/amd64
+    ports:
+      - "127.0.0.1:${MM_PORT:-8065}:8065"
+    environment:
+      MM_SQLSETTINGS_DRIVERNAME: mysql
+      MM_SQLSETTINGS_DATASOURCE: "mmuser:${DB_MYSQL_USER_PASSWORD:?set DB_MYSQL_USER_PASSWORD}@tcp(db-mysql:3306)/mattermost?charset=utf8mb4&parseTime=true"
+      MM_SERVICESETTINGS_SITEURL: "http://localhost:${MM_PORT:-8065}"
+      MM_PLUGINSETTINGS_ENABLE: "false"
+    volumes:
+      - mattermost-data:/mattermost/data
+    depends_on:
+      db-mysql:
+        condition: service_healthy
+    networks: [app, db]
+  db-mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: "${DB_MYSQL_ROOT_PASSWORD:?set DB_MYSQL_ROOT_PASSWORD}"
+      MYSQL_DATABASE: mattermost
+      MYSQL_USER: mmuser
+      MYSQL_PASSWORD: "${DB_MYSQL_USER_PASSWORD:?set DB_MYSQL_USER_PASSWORD}"
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_general_ci", "--default-authentication-plugin=mysql_native_password"]
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", 'MYSQL_PWD="$$MYSQL_PASSWORD" mysql -h 127.0.0.1 -u"$$MYSQL_USER" -Nse "SELECT 1" mattermost']
+      interval: 3s
+      timeout: 5s
+      retries: 60
+    networks: [db]
+    # App reaches only MySQL through the isolated database network.
+volumes:
+  mattermost-data:
+  mysql-data:
+networks:
+  app:
+  db:
+    internal: true

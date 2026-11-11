@@ -1,0 +1,71 @@
+name: Mattermost migration and upgrade
+on:
+  push:
+    branches: [migration]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+concurrency:
+  group: mm-practice4-deploy
+  cancel-in-progress: false
+
+jobs:
+  migrate-and-deploy:
+    if: github.ref == 'refs/heads/migration'
+    runs-on: [self-hosted, mattermost-practice4]
+    timeout-minutes: 45
+    env:
+      DB_MYSQL_ROOT_PASSWORD: ${{ secrets.DB_MYSQL_ROOT_PASSWORD }}
+      DB_MYSQL_USER_PASSWORD: ${{ secrets.DB_MYSQL_USER_PASSWORD }}
+      DB_POSTGRES_PASSWORD: ${{ secrets.DB_POSTGRES_PASSWORD }}
+      COMPOSE_PROJECT_NAME: ${{ vars.MM_COMPOSE_PROJECT || 'mm-practice4' }}
+      MM_PORT: ${{ vars.MM_PORT || '8065' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check runner tools
+        shell: bash
+        run: |
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
+          docker info --format 'Docker architecture {{.Architecture}}'
+          docker compose version
+          python3 --version
+      - name: Check migration status
+        id: status
+        shell: bash
+        run: |
+          if [[ -f "$RUNNER_WORKSPACE/${COMPOSE_PROJECT_NAME}-state/.migration_completed" ]]; then
+            echo "already_migrated=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "already_migrated=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Migrate or deploy
+        shell: bash
+        run: |
+          export MIGRATION_STATE_DIR="$RUNNER_WORKSPACE/${COMPOSE_PROJECT_NAME}-state"
+          bash scripts/migrate.sh
+      - name: Verify migrated demo data
+        shell: bash
+        env:
+          MM_ADMIN_PASSWORD: ${{ secrets.MM_ADMIN_PASSWORD }}
+        run: python3 scripts/demo.py verify --url "http://localhost:$MM_PORT"
+      - name: Write run summary
+        shell: bash
+        env:
+          ALREADY_MIGRATED: ${{ steps.status.outputs.already_migrated }}
+        run: |
+          {
+            echo "## Mattermost practice 4"
+            echo "- Runner: $RUNNER_NAME"
+            echo "- Compose project: $COMPOSE_PROJECT_NAME"
+            echo "- Migration already completed before this run: $ALREADY_MIGRATED"
+            echo "- Four messages, private channel and attachment verified through API"
+            echo '```'
+            docker compose -f docker-compose.prod.yml ps
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
