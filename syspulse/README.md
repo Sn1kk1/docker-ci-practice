@@ -1,5 +1,7 @@
 # Практика 5 Сборка Debian пакета и публикация в Nexus
 
+Учебный Nexus OSS 3.76.1 слушает только loopback. На Mac используется профиль Colima `practice5` с запуском Linux amd64 через Rosetta.
+
 Ветка `release` запускает `.github/workflows/publish-deb.yml` на self-hosted раннере с меткой `syspulse-practice5`.
 
 | Файл | Назначение |

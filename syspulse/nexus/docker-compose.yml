@@ -1,13 +1,14 @@
 name: practice5-nexus
 services:
   nexus:
-    image: sonatype/nexus3:3.80.2
+    image: sonatype/nexus3:3.76.1
+    platform: linux/amd64
     ports:
       - "127.0.0.1:8081:8081"
     environment:
       INSTALL4J_ADD_VM_PARAMS: "-Xms512m -Xmx1400m -XX:MaxDirectMemorySize=768m"
     volumes:
-      - data:/nexus-data
+      - oss-data:/nexus-data
     restart: unless-stopped
 volumes:
-  data:
+  oss-data:
