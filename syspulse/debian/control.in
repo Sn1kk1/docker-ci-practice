@@ -1,0 +1,8 @@
+Package: syspulse
+Version: @VERSION@
+Section: utils
+Priority: optional
+Architecture: amd64
+Maintainer: DevOps Team <devops@example.com>
+Description: Lightweight CLI tool for a system health snapshot
+ Reads /proc and reports uptime, load average and memory info.

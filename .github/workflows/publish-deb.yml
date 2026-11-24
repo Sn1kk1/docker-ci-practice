@@ -1,0 +1,50 @@
+name: Build and publish syspulse
+on:
+  push:
+    branches: [release]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: syspulse-release
+  cancel-in-progress: false
+jobs:
+  build-publish-verify:
+    if: github.ref == 'refs/heads/release'
+    runs-on: [self-hosted, syspulse-practice5]
+    timeout-minutes: 30
+    env:
+      DOCKER_CONTEXT: ${{ vars.SYSPULSE_DOCKER_CONTEXT }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Configure Docker PATH
+        shell: bash
+        run: |
+          echo /usr/local/bin >> "$GITHUB_PATH"
+          echo /opt/homebrew/bin >> "$GITHUB_PATH"
+      - name: Build static Linux binary
+        run: bash syspulse/scripts/build.sh
+      - name: Package as Debian archive
+        id: package
+        run: bash syspulse/scripts/package.sh
+      - name: Publish to Nexus
+        env:
+          NEXUS_HOST: ${{ secrets.NEXUS_HOST }}
+          NEXUS_USER: ${{ secrets.NEXUS_USER }}
+          NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
+          DEB_PATH: ${{ steps.package.outputs.path }}
+        run: bash syspulse/scripts/publish.sh "$DEB_PATH"
+      - name: Verify signed APT install in Ubuntu
+        env:
+          VERSION: ${{ steps.package.outputs.version }}
+        run: bash syspulse/scripts/verify.sh "$VERSION"
+      - name: Save Debian package
+        if: ${{ always() && steps.package.outputs.path != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: syspulse-deb
+          path: ${{ steps.package.outputs.path }}
+          if-no-files-found: error
+          retention-days: 7
